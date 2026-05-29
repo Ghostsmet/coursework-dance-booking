@@ -1,0 +1,161 @@
+---
+- hosts: localhost
+  connection: local
+  become: yes
+  vars:
+    odoo_version: "16.0"
+    db_user: "odoo_user"
+    db_password: "odoo123"
+    admin_password: "admin"
+
+  tasks:
+    - name: Обновление системы
+      apt:
+        update_cache: yes
+        upgrade: dist
+
+    - name: Установка системных пакетов
+      apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+          - python3-pip
+          - python3-dev
+          - python3-venv
+          - git
+          - build-essential
+          - libssl-dev
+          - libffi-dev
+          - libjpeg-dev
+          - libpq-dev
+          - nodejs
+          - npm
+          - nginx
+        state: present
+
+    - name: Создание базы данных для Odoo
+      shell: |
+        sudo -u postgres psql -c "CREATE DATABASE boking_dance OWNER {{ db_user }} ENCODING 'UTF-8';"
+      args:
+        executable: /bin/bash
+      ignore_errors: yes 
+
+    - name: Клонирование Odoo из GitHub
+      git:
+        repo: https://www.github.com/odoo/odoo
+        dest: /opt/odoo/odoo
+        version: "{{ odoo_version }}"
+        depth: 1
+
+    - name: Создание виртуального окружения
+      pip:
+        requirements: /opt/odoo/odoo/requirements.txt
+        virtualenv: /opt/odoo/venv
+        virtualenv_command: python3 -m venv
+
+    - name: Установка дополнительных Python пакетов
+      pip:
+        name:
+          - PyPDF2
+          - reportlab
+          - psycopg2-binary
+          - pillow
+          - freezegun
+          - cssselect
+        virtualenv: /opt/odoo/venv
+
+    - name: Создание папки для кастомных модулей
+      file:
+        path: /opt/odoo/custom-addons
+        state: directory
+        mode: '0755'
+
+    - name: Клонирование модуля calendar
+      git:
+        repo: https://github.com/OCA/calendar.git
+        dest: /opt/odoo/custom-addons/calendar
+        version: "{{ odoo_version }}"
+
+    - name: Клонирование модуля web
+      git:
+        repo: https://github.com/OCA/web.git
+        dest: /opt/odoo/custom-addons/web
+        version: "{{ odoo_version }}"
+
+    - name: Создание пользователя odoo
+      user:
+        name: odoo
+        home: /opt/odoo
+        shell: /bin/bash
+        system: yes
+
+    - name: Настройка прав на папки
+      file:
+        path: "{{ item }}"
+        owner: odoo
+        group: odoo
+        recurse: yes
+      loop:
+        - /opt/odoo/odoo
+        - /opt/odoo/venv
+        - /opt/odoo/custom-addons
+
+    - name: Создание директории для данных
+      file:
+        path: /var/lib/odoo
+        state: directory
+        owner: odoo
+        group: odoo
+        mode: '0755'
+
+    - name: Создание директории для логов
+      file:
+        path: /var/log/odoo
+        state: directory
+        owner: odoo
+        group: odoo
+        mode: '0755'
+
+    - name: Создание конфигурационного файла Odoo
+      copy:
+        dest: /etc/odoo.conf
+        content: |
+          [options]
+          addons_path = /opt/odoo/odoo/addons,/opt/odoo/custom-addons/calendar,/opt/odoo/custom-addons/web
+          data_dir = /var/lib/odoo
+          admin_passwd = {{ admin_password }}
+          db_host = localhost
+          db_port = 5432
+          db_user = {{ db_user }}
+          db_password = {{ db_password }}
+          logfile = /var/log/odoo/odoo.log
+          http_port = 8069
+
+    - name: Создание systemd сервиса для Odoo
+      copy:
+        dest: /etc/systemd/system/odoo.service
+        content: |
+          [Unit]
+          Description=Odoo CRM
+          After=postgresql.service
+
+          [Service]
+          Type=simple
+          User=odoo
+          Group=odoo
+          ExecStart=/opt/odoo/venv/bin/python3 /opt/odoo/odoo/odoo-bin -c /etc/odoo.conf
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Перезагрузка systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Запуск и включение Odoo
+      systemd:
+        name: odoo
+        state: started
+        enabled: yes
